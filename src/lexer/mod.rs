@@ -46,6 +46,7 @@ pub enum Token<'a> {
   OpenParen(TokenLocation),
   CloseParen(TokenLocation),
   Literal(TokenLocation, Literals<'a>),
+  Identifier(TokenLocation, &'a str),
   EOF(TokenLocation),
 }
 
@@ -91,7 +92,7 @@ impl<'a> Lexer<'a> {
   }
 
   fn advance(&mut self) {
-    if self.is_eol() {
+    if self.is_eol(0) {
       self.row +=1;
       self.col = 1;
     } else {
@@ -105,8 +106,8 @@ impl<'a> Lexer<'a> {
     self.current + offset >= self.code_bytes.len()
   }
 
-  fn is_eol(&self) -> bool {
-    !self.is_eof(0) && (self.get_current_char_byte() == NEW_LINE || self.get_current_char_byte() == LINE_FEED)
+  fn is_eol(&self, offset: usize) -> bool {
+    !self.is_eof(0) && (self.code_bytes[self.current + offset] == NEW_LINE || self.code_bytes[self.current + offset] == LINE_FEED)
   }
 
   fn eat_string(&mut self) {
@@ -117,7 +118,7 @@ impl<'a> Lexer<'a> {
 
     while !self.is_eof(0)
       && self.get_current_char_byte() != b'"'
-      && !self.is_eol()
+      && !self.is_eol(0)
     {
       self.advance();
     }
@@ -137,13 +138,17 @@ impl<'a> Lexer<'a> {
     }
   }
 
+  fn is_digit(&self, character: u8) -> bool {
+    (character >= b'0' && character <= b'9') || character == b'.'
+  }
+
   fn eat_number(&mut self) {
     let num_start_col = self.col;
     let num_start_row = self.row;
     let num_start = self.current;
     let mut is_decimal_point_eaten = false;
 
-    while !self.is_eof(1) && self.is_digit(self.peek())
+    while !self.is_eof(1) && !self.is_eol(1) && self.is_digit(self.peek())
     {  
       if self.peek() == b'.' {
         if !is_decimal_point_eaten {
@@ -168,13 +173,36 @@ impl<'a> Lexer<'a> {
   }
 
   fn eat_hash_single_line_comment(&mut self) {
-    while !self.is_eof(0) && !self.is_eol() {
+    while !self.is_eof(0) && !self.is_eol(0) {
       self.advance();
     }
   }
 
-  fn is_digit(&self, character: u8) -> bool {
-    (character >= b'0' && character <= b'9') || character == b'.'
+  fn is_alphabet(&self, character: u8) -> bool {
+    (character >= b'a' && character <= b'z') || (character >= b'A' && character <= b'Z')
+  }
+
+  fn is_alpha_numeric(&self, character: u8) -> bool {
+    self.is_digit(character) || self.is_alphabet(character)
+  }
+
+  fn eat_identifier(&mut self) {
+    let ident_start_col = self.col;
+    let ident_start_row = self.row;
+    let ident_start = self.current;
+
+    while !self.is_eof(1) && (self.is_alpha_numeric(self.peek()) || self.peek() == b'_') {
+      self.advance();
+    }
+
+    let ident_name = str::from_utf8(&self.code_bytes[ident_start..self.current + 1]).unwrap();
+
+    self.tokens.push(
+      Token::Identifier(TokenLocation {
+        row: ident_start_row,
+        col: ident_start_col
+      }, ident_name)
+    )
   }
 
   fn get_current_token_location(&self) -> TokenLocation {
@@ -193,9 +221,7 @@ impl<'a> Lexer<'a> {
       let char_string = code.get(self.current..self.current + 1).unwrap();
       match self.get_current_char_byte() {
         b' ' => (),
-        NEW_LINE | LINE_FEED => {
-          self.advance();
-        }
+        NEW_LINE | LINE_FEED => (),
         b'+' => {
           if self.lookup(b'+') {
             self.tokens.push(Token::Operator(
@@ -243,6 +269,7 @@ impl<'a> Lexer<'a> {
           Operators::Assignment,
         )),
         b'"' => self.eat_string(),
+        b'a'..=b'z' | b'A'..=b'Z' => self.eat_identifier(),
         b'#' => self.eat_hash_single_line_comment(),
         b'0'..=b'9' => self.eat_number(),
         _ => panic!(
